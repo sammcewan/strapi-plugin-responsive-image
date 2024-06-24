@@ -24,13 +24,6 @@ const writeStreamToFile = (stream, path) =>
     writeStream.on("error", reject);
   });
 
-const getMetadata = (file) =>
-  new Promise((resolve, reject) => {
-    const pipeline = sharp();
-    pipeline.metadata().then(resolve).catch(reject);
-    file.getStream().pipe(pipeline);
-  });
-
 const resizeFileTo = async (
   file,
   options,
@@ -41,7 +34,14 @@ const resizeFileTo = async (
 ) => {
   const filePath = join(file.tmpWorkingDirectory, hash);
 
-  let sharpInstance = autoOrientation ? sharp().rotate() : sharp();
+  let transformer;
+  if (!file.filepath) {
+    transformer = sharp();
+  } else {
+    transformer = sharp(file.filepath);
+  }
+
+  let sharpInstance = autoOrientation ? transformer.rotate() : transformer;
 
   if (options.convertToFormat) {
     sharpInstance = sharpInstance.toFormat(options.convertToFormat);
@@ -71,17 +71,30 @@ const resizeFileTo = async (
       break;
   }
 
-  await writeStreamToFile(file.getStream().pipe(sharpInstance), filePath);
+  let newInfo;
+  if (!file.filepath) {
+    const transform = sharp()
+      .resize(options)
+      .on("info", (info) => {
+        newInfo = info;
+      });
+
+    await writeStreamToFile(file.getStream().pipe(transform), filePath);
+  } else {
+    newInfo = await sharp(file.filepath).resize(options).toFile(filePath);
+  }
+
+  const { width, height, size } = newInfo;
+
   const newFile = {
     name,
     hash,
     ext,
     mime: options.convertToFormat ? mime.lookup(ext) : file.mime,
+    filepath: filePath,
     path: file.path || null,
     getStream: () => fs.createReadStream(filePath),
   };
-
-  const { width, height, size } = await getMetadata(newFile);
 
   Object.assign(newFile, { width, height, size: bytesToKbytes(size) });
   return newFile;
@@ -94,10 +107,6 @@ const generateResponsiveFormats = async (file) => {
     .getSettings();
 
   if (!responsiveDimensions) return [];
-
-  // if (!(await isImage(file))) {
-  //   return [];
-  // }
 
   const { formats, quality, progressive } = await getService(
     "responsive-image"
